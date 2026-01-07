@@ -1,96 +1,98 @@
-# Restic Backup Automation (Remote to Local)
+# Secure Mac & Server Backup Automation
 
-This script automates backing up remote directories to a local Restic repository using SSHFS.
-It allows you to define multiple servers and specific include/exclude patterns for each.
+**Purpose**: A secure, automated system to backup Macs and remote servers (like Raspberry Pis) to multiple destinations (Local HDD, S3, WebDAV/Yandex.Disk) using `restic`.
 
-## Prerequisites
+```mermaid
+flowchart LR
+    subgraph Sources
+        Mac[💻 Mac (Local)]:::source
+        Pi[🍓 Raspberry Pi (Remote)]:::source
+    end
 
-1.  **Python 3**
-2.  **Restic**: `brew install restic`
-## Prerequisites
+    subgraph Automation
+        Script[⚙️ Python Script]:::script
+    end
 
-1.  **Python 3**
-2.  **Restic**: `brew install restic`
-3.  **Rsync**: `rsync` is usually pre-installed on macOS, but a newer version is recommended:
-    ```bash
-    brew install rsync
-    ```
-4.  **Dependencies**:
-    ```bash
-    pip install -r requirements.txt
-    ```
-5.  **Rclone**: `brew install rclone`, `rclone config`, new "webdav" config for yandex. 
+    subgraph Destinations
+        HDD[📂 Local Storage]:::dest
+        Cloud[☁️ Cloud (S3/WebDAV)]:::dest
+    end
 
-## Configuration
+    Mac -->|Direct Read| Script
+    Pi -->|Rsync via SSH| Script
+    Script -->|Encrypted Backup| HDD
+    Script -->|Encrypted Backup| Cloud
 
-Edit `servers.yaml` to define your servers:
-
-```yaml
-servers:
-  - name: "my-vps"
-    host: "root@my-vps.com"
-    repo_path: "./repos/my-vps"
-    # Local directory to mirror remote files to (requires disk space)
-    mirror_path: "./tmp/mirror_vps"
-    
-    # Define paths with specific excludes
-    paths:
-      - path: "/etc"
-      - path: "/var/www"
-        exclude: ["cache", "node_modules"] # Excludes /var/www/cache, etc.
-
-    # Global excludes (applies to all)
-    exclude:
-      - "*.log"
-      
-    # Command to get password from 1Password
-    password_command: "op item get restic-repo-password --fields password_server_1"
+    classDef source fill:#e1f5fe,stroke:#01579b;
+    classDef script fill:#fff9c4,stroke:#fbc02d;
+    classDef dest fill:#e8f5e9,stroke:#2e7d32;
 ```
 
-## Usage
+## 🛡️ Solution Overview
 
-1.  Set your Restic password (so it doesn't ask interactively):
-    ```bash
-    export RESTIC_PASSWORD="your-secure-password"
-    ```
-    
-2.  Run the script:
-    ```bash
-    <!-- python3 backup.py -->
-    uv run --with PyYAML backup.py
-    ```
+This project wraps `restic` and `rsync` in a Python automation layer to handle multi-source and multi-destination backups securely.
 
-## How it works
+### Advantages
+*   **Security First**: No passwords stored in config files. Uses **1Password CLI** (`op`) to fetch repo keys on-the-fly.
+*   **Flexibility**: Backs up **Local Folders** directly and **Remote Servers** (via `rsync` mirroring).
+*   **Multi-Target**: Push backups to **Local Disks** and **Cloud Storage** (S3, Yandex.Disk via `rclone`) simultaneously.
+*   **Smart Excludes**: Powerful exclude patterns (e.g., `*.tmp`, `node_modules`) to save space.
+*   **Verification**: Built-in tools to verify integrity (`check`) and unlock stale locks.
 
-1.  Reads `servers.yaml`.
-2.  Initializes a Restic repository at `repo_path` if it doesn't exist.
-3.  Mounts the remote server filesystem (via SSH) to `mount_point` using `sshfs`.
-4.  Runs `restic backup` on the mapped local paths.
-5.  Unmounts and cleans up.
+### Disadvantages/Trade-offs
+*   **Storage**: Remote backups verify integrity by first mirroring files locally using `rsync`. This requires temporary local disk space equal to the size of the remote backup source.
+*   **Dependencies**: Requires setting up `op` CLI and `restic` initially.
 
+## 📦 Prerequisites
 
-## How to restore
-1.  Get Restic stapshot ID:
-    ```bash
-    uv run --with PyYAML restore.py --list pi
-    uv run --with PyYAML restore.py --list pi --repo yandex
-    ```
-2.  Restore it to target directory:
-    ```bash
-    uv run --with PyYAML restore.py --snapshot <snapshot_id> --target ./tmp/restore_pi
-    uv run --with PyYAML restore.py --restore latest --target ./out --repo yandex pi
-    ```
+Ensure these are installed and available in your `$PATH`:
 
-## Makefile Shortcuts
+1.  **[uv](https://github.com/astral-sh/uv)**: Python package and project manager.
+2.  **[restic](https://restic.net/)**: The core backup tool.
+3.  **[1Password CLI (`op`)](https://developer.1password.com/docs/cli/)**: For secure password retrieval.
+4.  **[rsync](https://rsync.samba.org/)**: For fetching data from remote servers.
+5.  **[rclone](https://rclone.org/)** (Optional): If backing up to WebDAV/Cloud targets.
 
-A `Makefile` is provided for convenience:
+## 🚀 Usage Examples
 
-*   **Backup all servers**:
-    ```bash
-    make backup
-    ```
-*   **List all snapshots**:
-    ```bash
-    make show-backups
-    ```
+### 1. Configuration (`servers.yaml`)
+Define your sources and destinations. See [`sample.servers.yaml`](sample.servers.yaml) for a full reference.
 
+```yaml
+- name: "my-macbook"
+  host: "localhost"
+  paths: ["/Users/user/Documents"]
+  repositories:
+    - name: "yandex"
+      path: "rclone:webdav:backups/mac"
+      password_command: "op item get 'Repo Key' --fields password"
+```
+
+### 2. Run Backup
+Backs up all configured servers to all repositories sequentially.
+```bash
+make backup
+```
+
+### 3. Restore Files
+List snapshots for a specific server and repository, then restore.
+```bash
+# List snapshots
+uv run --with PyYAML restore.py --list my-macbook --repo yandex
+
+# Restore specific snapshot
+uv run --with PyYAML restore.py --restore 2bad2da5 --target ./restore_folder --repo yandex my-macbook
+```
+
+### 4. Verify Integrity
+Ensure your backups are safe and readable.
+```bash
+# Fast structural check (indexes & packs existence)
+make verify
+
+# Full data integrity check (reads ALL data - slow!)
+make verify-full
+
+# Unlock repositories if a backup was interrupted
+make unlock
+```
