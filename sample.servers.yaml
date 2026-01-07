@@ -1,0 +1,96 @@
+servers:
+  # ==============================================================================
+  # EXAMPLE 1: Full feature set (Local + Cloud, Cleanup, Retention, strict excludes)
+  # ==============================================================================
+  - name: "production-server"
+    host: "user@192.168.1.50"
+    port: 2222  # Optional, default is 22
+
+    # 1. Mirroring (Rsync)
+    # --------------------
+    # Remote files are first rsynced to this local path.
+    mirror_path: "./tmp/mirror_prod"
+    
+    # If true, the mirror directory is deleted after backup to save space.
+    # Note: Restic dedup works best if files persist, but this saves local disk.
+    cleanup: true
+
+    # 2. Repositories (Restic)
+    # ------------------------
+    # You can backup to multiple targets simultaneously.
+    repositories:
+      # A. Local Repository
+      - name: "local-disk"
+        path: "/Volumes/Backups/prod_repo"
+        # Command to retrieve repository password (e.g., from 1Password CLI)
+        password_command: "op item get 'Restic Local Key' --fields password"
+
+      # B. Yandex Disk (via Rclone WebDAV)
+      # Requirement: 'rclone config' must have a remote named 'yandex' configured.
+      - name: "yandex-cloud"
+        path: "rclone:yandex:backups/production"
+        password_command: "op item get 'Restic Yandex Key' --fields password"
+
+      # C. S3 Compatible Storage
+      - name: "aws-s3"
+        path: "s3:s3.amazonaws.com/my-backup-bucket"
+        password_command: "op item get 'Restic S3 Key' --fields password"
+        # Environment variables for keys (Specific to this repository)
+        env:
+          AWS_ACCESS_KEY_ID: "op item get 'AWS Creds' --fields access_key"
+          AWS_SECRET_ACCESS_KEY: "op item get 'AWS Creds' --fields secret_key"
+
+    # 3. Retention Policy (Pruning)
+    # -----------------------------
+    # How long to keep snapshots.
+    retention:
+      keep_last: 7          # Keep last 7 snapshots
+      keep_daily: 7         # Keep 7 daily snapshots
+      keep_weekly: 4        # Keep 4 weekly snapshots
+      keep_monthly: 6       # Keep 6 monthly snapshots
+      keep_yearly: 1        # Keep 1 yearly snapshot
+    
+    # Set to false to skip pruning for this server (default: true)
+    prune: true
+
+    # 4. Global Excludes (Rsync & Restic)
+    # -----------------------------------
+    # These patterns are excluded from ALL paths.
+    exclude:
+      - "*.log"
+      - "*.tmp"
+      - ".git"
+      - ".DS_Store"
+      - "node_modules"
+
+    # 5. Paths to Backup
+    # ------------------
+    paths:
+      # Simple directory
+      - path: "/etc/nginx"
+      
+      # Directory with specific excludes
+      - path: "/home/user/project"
+        exclude:
+          - "venv"           # Excludes /home/user/project/venv
+          - "cache/*"        # Excludes contents of cache
+
+      # Single file
+      - path: "/var/lib/redis/dump.rdb"
+
+
+  # ==============================================================================
+  # EXAMPLE 2: Minimal Configuration
+  # ==============================================================================
+  - name: "pi-home"
+    host: "pi"
+    mirror_path: "./tmp/mirror_pi"
+    
+    # Legacy: Single repo_path is still supported (converted to 'default' repo internally)
+    repo_path: "/Volumes/Backups/pi_simple"
+    password_command: "cat /Users/user/.restic_pass"
+
+    # Simple list of paths (Legacy 'include' style also supported)
+    include:
+      - "/home/pi/Documents"
+      - "/etc/ssh"
