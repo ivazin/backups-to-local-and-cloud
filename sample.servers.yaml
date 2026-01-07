@@ -30,6 +30,14 @@ servers:
       - name: "yandex-cloud"
         path: "rclone:yandex:backups/production"
         password_command: "op item get 'Restic Yandex Key' --fields password"
+        # Performance Tuning for Remote Repos via Env Vars:
+        env:
+          # Increase concurrent transfers (default is 4)
+          RCLONE_TRANSFERS: "16"
+          # Increase concurrent checkers (default is 8)
+          RCLONE_CHECKERS: "32"
+          # Buffer size can also help (default 16M)
+          # RCLONE_BUFFER_SIZE: "64M"
 
       # C. S3 Compatible Storage
       - name: "aws-s3"
@@ -92,5 +100,24 @@ servers:
 
     # Simple list of paths (Legacy 'include' style also supported)
     include:
-      - "/home/pi/Documents"
-      - "/etc/ssh"
+  # ==============================================================================
+  # EXAMPLE 3: Local Directory Backup (No Rsync)
+  # ==============================================================================
+  - name: "my-macbook"
+    # No host needs to be specified, or use "localhost"
+    host: "localhost"
+    
+    # Repositories to push to
+    repositories:
+      - name: "local-nas"
+        path: "/Volumes/NAS/Backups/macbook"
+        password_command: "op item get 'NAS Backup Key' --fields password"
+
+    # Direct paths on this machine
+    paths:
+      - path: "/Users/user/Documents"
+      - path: "/Users/user/Pictures"
+        exclude: ["*.tmp"]
+    
+    # Cleanup is irrelevant for local backup (nothing mirrored)
+    cleanup: false

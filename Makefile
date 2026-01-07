@@ -6,13 +6,16 @@ help:
 	@echo "  make show-backups  - List snapshots for all servers"
 	@echo "  make clean         - Remove __pycache__"
 	@echo "  make clean-cache   - Remove old restic cache files"
+	@echo "  make verify        - Verify integrity of backups (fast)"
+	@echo "  make verify-full   - Verify integrity reading all data (slow)"
+	@echo "  make unlock        - Remove stale locks from all repositories"
 
 clean:
 	@echo "###### Removing __pycache__ directories... ######"
 	@find . -type d -name "__pycache__" -exec rm -rf {} +
 	@echo "###### Removing tmp directories... ######"
 # 	@find . -type d -name "tmp" -exec rm -rf {} +
-	@rm -rf ./tmp/
+	@rm -rf ./tmp/ || true
 
 clean-cache:
 	restic cache --cleanup
@@ -20,10 +23,19 @@ clean-cache:
 backup: clean
 	@echo "###### Running backup... ######"
 #	to ask for 1password
-	@op item get 'Backup Repo Password Restic' --fields password
+	@op item get 'Backup Repo Password Restic' --fields password > /dev/null
 	
 	@uv run --with PyYAML backup.py
 	@$(MAKE) clean
 
 show-backups: clean
 	uv run --with PyYAML restore.py --list all
+
+verify:
+	uv run --with PyYAML verify.py
+
+verify-full:
+	uv run --with PyYAML verify.py --full
+
+unlock:
+	uv run --with PyYAML verify.py --unlock

@@ -68,7 +68,13 @@ def sync_paths(server_conf):
     Rsync remote paths to local mirror directory.
     Replaces SSHFS mount strategy.
     """
-    host = server_conf['host']
+    host = server_conf.get('host')
+    
+    # If host is localhost or missing, it's a local backup. Skip sync.
+    if not host or host == 'localhost':
+        logger.info(f"Server {server_conf['name']} is local. Skipping rsync.")
+        return
+
     port = str(server_conf.get('port', 22))
     mirror_path = server_conf.get('mirror_path') # renamed from mount_point
     
@@ -156,7 +162,11 @@ def sync_paths(server_conf):
             continue
 
 def perform_backup(server_conf):
-    mirror_path = server_conf.get('mirror_path') or server_conf.get('mount_point')
+    is_local = not server_conf.get('host') or server_conf.get('host') == 'localhost'
+    
+    mirror_path = None
+    if not is_local:
+         mirror_path = server_conf.get('mirror_path') or server_conf.get('mount_point')
     
     # Includes parsing
     includes = server_conf.get('include', [])
@@ -225,7 +235,7 @@ def perform_backup(server_conf):
              try:
                  run_command(["restic", "-r", repo_path, "init"], env=env)
              except Exception as e:
-                 logger.error(f"Failed to init repo {repo_name}: {e}")
+                 logger.error(f"❌ Failed to init repo {repo_name}: {e}")
                  continue
 
         cmd = ["restic", "-r", repo_path, "backup"]
@@ -265,11 +275,23 @@ def perform_backup(server_conf):
         
         try:
             logger.info(f"Running backup command...")
-            # Run from mirror_path so relative sources work
-            subprocess.run(cmd, check=True, cwd=mirror_path, env=env)
-            logger.info(f"Backup for {server_conf['name']} (Repo: {repo_name}) completed successfully.")
+            
+            # Determine CWD
+            # If Remote/Mirror: run from mirror_path
+            # If Local: run from root (/) or user's CWD
+            cwd = None
+            is_local = not server_conf.get('host') or server_conf.get('host') == 'localhost'
+            
+            if is_local:
+                 # limit cwd to root so absolute paths work
+                 cwd = "/"
+            else:
+                 cwd = mirror_path
+
+            subprocess.run(cmd, check=True, cwd=cwd, env=env)
+            logger.info(f"✅ Backup for {server_conf['name']} (Repo: {repo_name}) completed successfully.")
         except subprocess.CalledProcessError as e:
-            logger.error(f"Backup failed for {server_conf['name']} (Repo: {repo_name}): {e}")
+            logger.error(f"❌ Backup failed for {server_conf['name']} (Repo: {repo_name}): {e}")
 
 def prune_repositories(server_conf):
     """Run prune for all repositories of a server."""
@@ -329,7 +351,7 @@ def prune_repositories(server_conf):
         try:
             run_command(cmd, env=env)
         except Exception as e:
-            logger.error(f"Prune failed for {repo_name}: {e}")
+            logger.error(f"❌ Prune failed for {repo_name}: {e}")
 
 
 def main():
