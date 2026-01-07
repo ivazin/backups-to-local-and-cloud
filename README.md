@@ -5,17 +5,17 @@
 ```mermaid
 flowchart LR
     subgraph Sources
-        Mac[💻 Mac (Local)]:::source
-        Pi[🍓 Raspberry Pi (Remote)]:::source
+        Mac["💻 Mac (Local)"]:::source
+        Pi["🍓 Raspberry Pi (Remote)"]:::source
     end
 
     subgraph Automation
-        Script[⚙️ Python Script]:::script
+        Script["⚙️ Python Script"]:::script
     end
 
     subgraph Destinations
-        HDD[📂 Local Storage]:::dest
-        Cloud[☁️ Cloud (S3/WebDAV)]:::dest
+        HDD["📂 Local Storage"]:::dest
+        Cloud["☁️ Cloud (S3/WebDAV)"]:::dest
     end
 
     Mac -->|Direct Read| Script
