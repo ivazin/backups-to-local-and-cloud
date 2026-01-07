@@ -14,7 +14,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        RotatingFileHandler("backup.log", maxBytes=50*1024*1024, backupCount=10),
+        RotatingFileHandler("log_backup.log", maxBytes=50*1024*1024, backupCount=10),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -124,7 +124,7 @@ def sync_paths(server_conf):
         
         # Rsync command
         # Add --log-file to a specific rsync log to capture details
-        rsync_log = "rsync_last_run.log"
+        rsync_log = "log_rsync_last_run.log"
         
         cmd = [
             "rsync", "-az", "--delete", "--info=progress2",

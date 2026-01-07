@@ -1,5 +1,4 @@
-backup.log
-rsync_last_run.log
+*.log
 .DS_Store
 __pycache__/*
 tmp/*

@@ -8,13 +8,22 @@ help:
 	@echo "  make clean-cache   - Remove old restic cache files"
 
 clean:
-	find . -type d -name "__pycache__" -exec rm -rf {} +
+	@echo "###### Removing __pycache__ directories... ######"
+	@find . -type d -name "__pycache__" -exec rm -rf {} +
+	@echo "###### Removing tmp directories... ######"
+# 	@find . -type d -name "tmp" -exec rm -rf {} +
+	@rm -rf ./tmp/
 
 clean-cache:
 	restic cache --cleanup
 
 backup: clean
-	uv run --with PyYAML backup.py
+	@echo "###### Running backup... ######"
+#	to ask for 1password
+	@op item get 'Backup Repo Password Restic' --fields password
+	
+	@uv run --with PyYAML backup.py
+	@$(MAKE) clean
 
 show-backups: clean
 	uv run --with PyYAML restore.py --list all
