@@ -35,11 +35,11 @@ show-backups: clean
 	@echo "📋 Listing all snapshots..."
 	uv run --with PyYAML src/restore.py --list all
 
-verify:
+verify: clean
 	@echo "🔍 Verifying backup integrity (fast check)..."
 	uv run --with PyYAML src/verify.py
 
-verify-full:
+verify-full: clean
 	@echo "🕵️  Verifying full data integrity (slow check)..."
 	uv run --with PyYAML src/verify.py --full
 
@@ -47,7 +47,7 @@ unlock:
 	@echo "🔓 Unlocking repositories..."
 	uv run --with PyYAML src/verify.py --unlock
 
-ruff:
+ruff: clean
 	@echo "🧹 Cleaning up the code mess..."
 	@rm -rf .venv .ruff_cache .mypy_cache
 	@uvx ruff check src/*.py --fix

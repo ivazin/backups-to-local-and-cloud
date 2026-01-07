@@ -62,7 +62,9 @@ def verify_server(server_conf: Dict[str, Any], args: argparse.Namespace) -> None
                 )
         except subprocess.CalledProcessError as e:
             if e.returncode == 10:
-                logger.warning(f"⁉️ Repository for '{server_conf['name']}' - '{repo_name}' does not exist yet (skipping).")
+                logger.warning(
+                    f"⁉️ Repository for '{server_conf['name']}' - '{repo_name}' does not exist yet (skipping)."
+                )
             elif args.unlock:
                 logger.error(
                     f"❌ Unlock FAILED for '{server_conf['name']}' repo: '{repo_name}': {e}"
