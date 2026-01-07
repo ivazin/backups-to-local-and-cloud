@@ -1,0 +1,43 @@
+[project]
+name = "automated-backups"
+version = "0.1.0"
+description = "Scripts for automated backups."
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "pyyaml>=6.0.3",
+]
+
+[tool.ruff]
+# line-length = 120
+target-version = "py314"
+
+[tool.ruff.format]
+quote-style = "single"
+indent-style = "space"
+docstring-code-format = true
+docstring-code-line-length = 88
+
+[tool.ruff.lint]
+select = [
+    # errors
+    "E",
+    # pyflakes
+    "F",
+    # import sorting
+    "I"
+]
+ignore = [
+    # ignore line-length rule
+    "E501"
+] 
+exclude = ["migrations", "node_modules", ".venv", "__pycache__"]
+
+[tool.mypy]
+python_version = "3.14"
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+strict_optional = true
+ignore_missing_imports = true
