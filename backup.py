@@ -24,7 +24,7 @@ def load_config(path):
     with open(path, 'r') as f:
         return yaml.safe_load(f)
 
-def run_command(cmd, env=None, check=True, capture_output=False):
+def run_command(cmd, env=None, check=True, capture_output=False, log_error=True):
     """Run a shell command."""
     # Don't log full environment as it may contain passwords
     logger.info(f"Running: {' '.join(cmd)}")
@@ -34,32 +34,23 @@ def run_command(cmd, env=None, check=True, capture_output=False):
         else:
              subprocess.run(cmd, check=check, env=env)
     except subprocess.CalledProcessError as e:
-        logger.error(f"Command failed: {e}")
-        if capture_output and e.stderr:
-             logger.error(f"Command stderr:\n{e.stderr}")
+        if log_error:
+            logger.error(f"Command failed: {e}")
+            if capture_output and e.stderr:
+                logger.error(f"Command stderr:\n{e.stderr}")
         if check:
             raise
 
-def get_password(server_conf):
-    """Retrieve password from environment or command."""
-    # 1. Check for specific password command
-    cmd_str = server_conf.get('password_command')
-    if cmd_str:
+def get_password_value(cmd_str):
+    """Run command to get password."""
+    if not cmd_str:
+        return None
+    try:
         logger.info(f"Retrieving password using command: {cmd_str}")
-        try:
-            # We use shell=True to allow complex commands/pipes if user desires,
-            result = subprocess.run(cmd_str, shell=True, check=True, capture_output=True, text=True)
-            return result.stdout.strip()
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to retrieve password: {e.stderr}")
-            raise RuntimeError("Password retrieval failed")
-
-    # 2. Check for global env var
-    if "RESTIC_PASSWORD" in os.environ:
-        return os.environ["RESTIC_PASSWORD"]
-    
-    # 3. Fail
-    raise ValueError("No password provided (RESTIC_PASSWORD env or password_command in config)")
+        return subprocess.check_output(cmd_str, shell=True).strip().decode('utf-8')
+    except Exception as e:
+        logger.error(f"Failed to get password: {e}")
+        return None
 
 def ensure_repo_init(server_conf):
     """Initialize restic repo if config file doesn't exist."""
@@ -165,116 +156,180 @@ def sync_paths(server_conf):
             continue
 
 def perform_backup(server_conf):
-    repo_path = os.path.abspath(server_conf['repo_path'])
-    
-    # Use mirror_path
     mirror_path = server_conf.get('mirror_path') or server_conf.get('mount_point')
     
-    # ... rest parsing similar to before ...
+    # Includes parsing
     includes = server_conf.get('include', [])
     paths_conf = server_conf.get('paths', [])
     global_excludes = server_conf.get('exclude', [])
-    name = server_conf['name']
+    
+    # Normalize targets
+    targets = []
+    for inc in includes:
+        targets.append({
+            'path': inc.lstrip('/'),
+            'excludes': []
+        })
+    for p_conf in paths_conf:
+        targets.append({
+            'path': p_conf['path'].lstrip('/'),
+            'excludes': p_conf.get('exclude', [])
+        })
 
-    current_dir = os.getcwd()
-    try:
-        os.chdir(mirror_path)
+    if not targets:
+        logger.warning(f"No paths configured to backup for {server_conf['name']}")
+        return
+
+    # Iterate Repositories
+    repositories = server_conf.get('repositories', [])
+    if not repositories and 'repo_path' in server_conf:
+        repositories.append({
+            'name': 'default',
+            'path': server_conf['repo_path'],
+            'password_command': server_conf.get('password_command')
+        })
+
+    for repo in repositories:
+        repo_path = repo['path']
+        repo_name = repo.get('name', 'default')
+        logger.info(f"Starting restic backup for {server_conf['name']} (Repo: {repo_name}) from {mirror_path}...")
+
+        # Get Password
+        password_value = get_password_value(repo.get('password_command'))
+        if not password_value:
+             password_value = get_password_value(server_conf.get('password_command'))
         
-        # Normalize targets and path-specific excludes
-        targets = []
-        for inc in includes:
-            targets.append({
-                'path': inc.lstrip('/'),
-                'excludes': []
-            })
-        for p_conf in paths_conf:
-            p_path = p_conf['path'].lstrip('/')
-            p_excludes = p_conf.get('exclude', [])
-            targets.append({
-                'path': p_path,
-                'excludes': p_excludes
-            })
+        env = os.environ.copy()
+        if password_value:
+            env['RESTIC_PASSWORD'] = password_value
             
-        if not targets:
-            return
+        # Add repo-specific env
+        repo_env = repo.get('env', {})
+        for k, v in repo_env.items():
+             if v.startswith("op "):
+                  try:
+                      val = subprocess.check_output(v, shell=True).decode().strip()
+                      env[k] = val
+                  except Exception as ex:
+                      logger.warning(f"Failed to resolve env var {k} for repo {repo_name}: {ex}")
+             else:
+                  env[k] = v
+
+        # Init Check
+        try:
+             # Check config existence siliently (don't log error if fails, as it just means we need to init)
+             run_command(["restic", "-r", repo_path, "cat", "config"], env=env, check=True, capture_output=True, log_error=False)
+             logger.info(f"Repository {repo_name} exists.")
+        except:
+             logger.info(f"Initializing repository {repo_name} at {repo_path}")
+             try:
+                 run_command(["restic", "-r", repo_path, "init"], env=env)
+             except Exception as e:
+                 logger.error(f"Failed to init repo {repo_name}: {e}")
+                 continue
 
         cmd = ["restic", "-r", repo_path, "backup"]
         
+        # Add global excludes
         for ex in global_excludes:
             cmd.extend(["--exclude", ex])
             
+        # Add path-specific excludes
+        # Note: We must be careful about relative paths.
+        # Restic sees paths relative to mirror_path root.
+        # e.g. mirror_path/home/user/Documents -> stored as "home/user/Documents"
+        # exclude "mywebcamsweb/nginx_cache" should validly match "home/user/Documents/mywebcamsweb/nginx_cache" 
+        # IF we exclude based on patterns.
+        # Restic exclude patterns are flexible.
         for t in targets:
-            base_path = t['path']
+            base_path = t['path'] # e.g. home/user/Documents
             for ex in t['excludes']:
-                if ex.startswith('/'):
-                    final_ex = ex
-                else:
-                    final_ex = os.path.join(base_path, ex)
-                    if not final_ex.startswith('/'):
-                         final_ex = '/' + final_ex
-                cmd.extend(["--exclude", final_ex])
+                 # If user wrote "mywebcamsweb/nginx_cache", we might want to prefix with base path?
+                 # Or just pass it as is? "mywebcamsweb/nginx_cache" works as pattern usually.
+                 # But absolute paths in exclude list need care.
+                 if ex.startswith('/'):
+                     # Likely an absolute remote path constraint which we handle in rsync.
+                     # In restic, if we pass absolute path, it won't match relative storage.
+                     # We skip absolute excludes here or assume they are patterns?
+                     # Let's strip leading slash to be safe pattern
+                     cmd.extend(["--exclude", ex.lstrip('/')])
+                 else:
+                     cmd.extend(["--exclude", ex])
 
-        cmd.extend(["--tag", name])
+        # Add tags
+        cmd.extend(["--tag", server_conf['name']])
         
-        for t in targets:
-            cmd.append(t['path'])
+        # Add sources 
+        sources = [t['path'] for t in targets]
+        cmd.extend(sources)
+        
+        try:
+            logger.info(f"Running backup command...")
+            # Run from mirror_path so relative sources work
+            subprocess.run(cmd, check=True, cwd=mirror_path, env=env)
+            logger.info(f"Backup for {server_conf['name']} (Repo: {repo_name}) completed successfully.")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Backup failed for {server_conf['name']} (Repo: {repo_name}): {e}")
 
-        logger.info(f"Starting restic backup for {name} from {mirror_path}...")
-        
-        env = os.environ.copy()
-        env['RESTIC_PASSWORD'] = get_password(server_conf)
-        
-        run_command(cmd, env=env)
-        logger.info(f"Backup for {name} completed successfully.")
-        
-    except Exception as e:
-        logger.error(f"Backup failed for {name}: {e}")
-        raise
-    finally:
-        os.chdir(current_dir)
+def prune_repositories(server_conf):
+    """Run prune for all repositories of a server."""
+    repositories = server_conf.get('repositories', [])
+    if not repositories and 'repo_path' in server_conf:
+         repositories.append({
+            'name': 'default',
+            'path': server_conf['repo_path'],
+            'password_command': server_conf.get('password_command')
+         })
 
-def prune_repository(server_conf):
-    repo_path = os.path.abspath(server_conf['repo_path'])
-    name = server_conf['name']
-    
     retention = server_conf.get('retention', {})
-    
-    # Build forget command
-    cmd = ["restic", "-r", repo_path, "forget", "--prune"]
-    
-    # Supported keys mapping (config_key -> flag)
-    # We allow keys like keep_last, keep_daily, etc.
-    # If users use dashes in yaml "keep-last", we handle that too if we want, 
-    # but python dict keys usually underscores. Use underscores in config.
-    policy_found = False
-    
-    # Standard policies
-    for key in ['keep_last', 'keep_daily', 'keep_hourly', 'keep_weekly', 'keep_monthly', 'keep_yearly', 'keep_within']:
-        val = retention.get(key)
-        if val is not None:
-            # Convert keep_daily -> --keep-daily
-            flag = "--" + key.replace('_', '-')
-            cmd.extend([flag, str(val)])
-            policy_found = True
+    if not retention:
+        return
+
+    for repo in repositories:
+        repo_path = repo['path']
+        repo_name = repo.get('name', 'default')
+        
+        logger.info(f"Pruning snapshots for {server_conf['name']} (Repo: {repo_name})...")
+        
+        password_value = get_password_value(repo.get('password_command'))
+        if not password_value:
+             password_value = get_password_value(server_conf.get('password_command'))
+
+        env = os.environ.copy()
+        if password_value:
+            env['RESTIC_PASSWORD'] = password_value
             
-    # Fallback if no retention block or keys found: default keep-last 10
-    if not policy_found:
-        # Check root level legacy
-        legacy_val = server_conf.get('keep_last')
-        if legacy_val:
-             cmd.extend(["--keep-last", str(legacy_val)])
-        else:
+        # Add repo-specific env
+        repo_env = repo.get('env', {})
+        for k, v in repo_env.items():
+            if v.startswith("op "):
+                  try:
+                      val = subprocess.check_output(v, shell=True).decode().strip()
+                      env[k] = val
+                  except:
+                      pass
+            else:
+                  env[k] = v
+
+        cmd = ["restic", "-r", repo_path, "forget", "--prune"]
+        
+        # Standard policies
+        policy_found = False
+        for key in ['keep_last', 'keep_daily', 'keep_hourly', 'keep_weekly', 'keep_monthly', 'keep_yearly', 'keep_within']:
+            val = retention.get(key)
+            if val is not None:
+                flag = "--" + key.replace('_', '-')
+                cmd.extend([flag, str(val)])
+                policy_found = True
+        
+        if not policy_found:
              # Default
              cmd.extend(["--keep-last", "10"])
-
-    logger.info(f"Pruning snapshots for {name} with policy...")
-    
-    try:
-        env = os.environ.copy()
-        env['RESTIC_PASSWORD'] = get_password(server_conf)
-        run_command(cmd, env=env)
-    except Exception as e:
-        logger.warning(f"Prune failed for {name}: {e}")
+             
+        try:
+            run_command(cmd, env=env)
+        except Exception as e:
+            logger.error(f"Prune failed for {repo_name}: {e}")
 
 
 def main():
@@ -291,24 +346,27 @@ def main():
     for server in config['servers']:
         try:
             logger.info(f"Processing server: {server['name']}")
-            ensure_repo_init(server)
+            # ensure_repo_init(server) <--- Removed single init, now done per-repo in perform_backup
             
             # 1. Sync files to local mirror
             sync_paths(server)
             
-            # 2. Backup from local mirror
+            # 2. Backup from local mirror to ALL repositories
             perform_backup(server)
             
-            # 3. Prune
+            # 3. Prune ALL repositories
             if server.get('prune', True):
-                prune_repository(server)
+                prune_repositories(server)
             
             # 4. Optional Cleanup
             if server.get('cleanup', False):
                 mirror_path = server.get('mirror_path') or server.get('mount_point')
                 if mirror_path and os.path.exists(mirror_path):
                     logger.info(f"Cleaning up mirror paths {mirror_path}...")
-                    shutil.rmtree(mirror_path)
+                    try:
+                        shutil.rmtree(mirror_path)
+                    except OSError as e:
+                        logger.warning(f"Cleanup warning (non-critical): {e}")
                 
         except Exception as e:
             logger.error(f"Failed to process {server['name']}: {e}")

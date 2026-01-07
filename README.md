@@ -19,6 +19,7 @@ It allows you to define multiple servers and specific include/exclude patterns f
     ```bash
     pip install -r requirements.txt
     ```
+5.  **Rclone**: `brew install rclone`, `rclone config`, new "webdav" config for yandex. 
 
 ## Configuration
 
@@ -72,9 +73,13 @@ servers:
 1.  Get Restic stapshot ID:
     ```bash
     uv run --with PyYAML restore.py --list pi
+    uv run --with PyYAML restore.py --list pi --repo yandex
     ```
 2.  Restore it to target directory:
     ```bash
+    uv run --with PyYAML restore.py --snapshot <snapshot_id> --target ./tmp/restore_pi
+    uv run --with PyYAML restore.py --restore latest --target ./out --repo yandex pi
+    ```
 
 ## Makefile Shortcuts
 
