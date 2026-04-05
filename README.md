@@ -50,7 +50,7 @@ Ensure these are installed and available in your `$PATH`:
 1.  **[uv](https://github.com/astral-sh/uv)**: Python package and project manager.
 2.  **[restic](https://restic.net/)**: The core backup tool.
 3.  **[1Password CLI (`op`)](https://developer.1password.com/docs/cli/)**: For secure password retrieval.
-4.  **[rsync](https://rsync.samba.org/)**: For fetching data from remote servers.
+4.  **[rsync](https://rsync.samba.org/)**: For fetching data from remote servers. **Note**: `rsync` must be installed on **both** the local machine and the remote server. (`sudo apt-get update && sudo apt-get install -y rsync`)
 5.  **[rclone](https://rclone.org/)** (Optional): If backing up to WebDAV/Cloud targets.
 
 ## 🚀 Usage Examples
@@ -78,10 +78,10 @@ make backup
 List snapshots for a specific server and repository, then restore.
 ```bash
 # List snapshots
-uv run --with PyYAML restore.py --list my-macbook --repo yandex
+uv run --with PyYAML src/restore.py --list my-macbook --repo yandex
 
 # Restore specific snapshot
-uv run --with PyYAML restore.py --restore 2bad2da5 --target ./restore_folder --repo yandex my-macbook
+uv run --with PyYAML src/restore.py --restore 2bad2da5 --target ./restore_folder --repo yandex my-macbook
 ```
 
 ### 4. Verify Integrity

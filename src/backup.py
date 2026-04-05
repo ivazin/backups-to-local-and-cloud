@@ -45,7 +45,7 @@ def ensure_repo_init(server_conf: Dict[str, Any]) -> None:
         logger.info(f'Repository allows exists at {repo_path}')
 
 
-def sync_paths(server_conf: Dict[str, Any]) -> None:
+def sync_paths(server_conf: Dict[str, Any]) -> bool:
     """
     Rsync remote paths to local mirror directory.
     Replaces SSHFS mount strategy.
@@ -55,7 +55,7 @@ def sync_paths(server_conf: Dict[str, Any]) -> None:
     # If host is localhost or missing, it's a local backup. Skip sync.
     if not host or host == 'localhost':
         logger.info(f'Server {server_conf["name"]} is local. Skipping rsync.')
-        return
+        return True
 
     port = str(server_conf.get('port', 22))
     mirror_path = server_conf.get('mirror_path')  # renamed from mount_point
@@ -82,7 +82,7 @@ def sync_paths(server_conf: Dict[str, Any]) -> None:
 
     if not targets:
         logger.warning(f'No paths to sync for {server_conf["name"]}')
-        return
+        return True
 
     if not os.path.exists(mirror_path):
         os.makedirs(mirror_path)
@@ -127,6 +127,9 @@ def sync_paths(server_conf: Dict[str, Any]) -> None:
         for ex in global_excludes:
             cmd.extend(['--exclude', ex])
 
+        if server_conf.get('use_sudo', False):
+            cmd.extend(['--rsync-path', 'sudo rsync'])
+
         for ex in t_excludes:
             # If exclude is absolute, rsync anchors it to root of transfer.
             # But users might provide relative paths in config meant for restic.
@@ -141,10 +144,16 @@ def sync_paths(server_conf: Dict[str, Any]) -> None:
         except Exception as e:
             logger.error(f'Failed to sync {source_path}: {e}')
             # Decide: stop or continue? Continue best effort.
-            continue
+            # If rsync fails, we probably shouldn't backup this server to avoid "missing files" errors
+            # or backing up empty/stale state if we were to proceed.
+            # BUT: current logic was "continue". The user issue shows that "missing files" is a fatal error later.
+            # Let's return False if ANY sync fails, so we can skip backup.
+            return False
+
+    return True
 
 
-def perform_backup(server_conf: Dict[str, Any]) -> None:
+def perform_backup(server_conf: Dict[str, Any]) -> Dict[str, str]:
     is_local = not server_conf.get('host') or server_conf.get('host') == 'localhost'
 
     mirror_path = None
@@ -167,10 +176,11 @@ def perform_backup(server_conf: Dict[str, Any]) -> None:
 
     if not targets:
         logger.warning(f'No paths configured to backup for {server_conf["name"]}')
-        return
+        return {}
 
     # Iterate Repositories
     repositories = get_repositories(server_conf)
+    results = {}
 
     for repo in repositories:
         repo_path = repo['path']
@@ -202,6 +212,7 @@ def perform_backup(server_conf: Dict[str, Any]) -> None:
                 logger.error(
                     f"❌ Failed to init repo '{repo_name}' for '{server_conf['name']}': {e}"
                 )
+                results[repo_name] = f"INIT_FAILED: {e}"
                 continue
 
         cmd = ['restic', '-r', repo_path, 'backup']
@@ -256,19 +267,24 @@ def perform_backup(server_conf: Dict[str, Any]) -> None:
             logger.info(
                 f"✅ Backup for '{server_conf['name']}' (Repo: '{repo_name}') completed successfully."
             )
+            results[repo_name] = "SUCCESS"
         except subprocess.CalledProcessError as e:
             logger.error(
                 f"❌ Backup failed for '{server_conf['name']}' (Repo: '{repo_name}'): {e}"
             )
+            results[repo_name] = f"FAILED: {e}"
+
+    return results
 
 
-def prune_repositories(server_conf: Dict[str, Any]) -> None:
+def prune_repositories(server_conf: Dict[str, Any]) -> Dict[str, str]:
     """Run prune for all repositories of a server."""
     repositories = get_repositories(server_conf)
+    results = {}
 
     retention = server_conf.get('retention', {})
     if not retention:
-        return
+        return {}
 
     for repo in repositories:
         repo_path = repo['path']
@@ -305,8 +321,12 @@ def prune_repositories(server_conf: Dict[str, Any]) -> None:
 
         try:
             run_command(cmd, env=env)
+            results[repo_name] = "SUCCESS"
         except Exception as e:
             logger.error(f'❌ Prune failed for {repo_name}: {e}')
+            results[repo_name] = f"FAILED: {e}"
+
+    return results
 
 
 def main() -> None:
@@ -321,21 +341,44 @@ def main() -> None:
         sys.exit(1)
 
     config = load_config(CONFIG_FILE)
+    all_reports = []
 
     for server in config['servers']:
+        report = {
+            'name': server['name'],
+            'sync': 'SKIPPED',
+            'backups': {},
+            'prunes': {},
+            'cleanup': 'SKIPPED',
+            'success': True,
+        }
         try:
             logger.info(f'Processing server: {server["name"]}')
-            # ensure_repo_init(server) <--- Removed single init, now done per-repo in perform_backup
 
             # 1. Sync files to local mirror
-            sync_paths(server)
+            if not sync_paths(server):
+                logger.error(f"❌ Sync failed for {server['name']}. Skipping backup.")
+                report['sync'] = 'FAILED'
+                report['success'] = False
+                all_reports.append(report)
+                continue
+
+            host = server.get('host')
+            if host and host != 'localhost':
+                report['sync'] = 'SUCCESS'
 
             # 2. Backup from local mirror to ALL repositories
-            perform_backup(server)
+            backup_results = perform_backup(server)
+            report['backups'] = backup_results
+            if any('FAILED' in str(v) for v in backup_results.values()):
+                report['success'] = False
 
             # 3. Prune ALL repositories
             if server.get('prune', True):
-                prune_repositories(server)
+                prune_results = prune_repositories(server)
+                report['prunes'] = prune_results
+                if any('FAILED' in str(v) for v in prune_results.values()):
+                    report['success'] = False
 
             # 4. Optional Cleanup
             if server.get('cleanup', False):
@@ -344,12 +387,56 @@ def main() -> None:
                     logger.info(f'Cleaning up mirror paths {mirror_path}...')
                     try:
                         shutil.rmtree(mirror_path)
+                        report['cleanup'] = 'SUCCESS'
                     except OSError as e:
                         logger.warning(f'Cleanup warning (non-critical): {e}')
+                        report['cleanup'] = f'WARNING: {e}'
 
         except Exception as e:
             logger.error(f'Failed to process {server["name"]}: {e}')
-            continue
+            report['success'] = False
+            report['error'] = str(e)
+
+        all_reports.append(report)
+
+    # Final Report
+    print("\n" + "=" * 80)
+    print(f"{'BACKUP EXECUTION SUMMARY':^80}")
+    print("=" * 80)
+    print(f"{'Server':<25} | {'Sync':<10} | {'Backups':<20} | {'Prunes':<15}")
+    print("-" * 80)
+
+    for r in all_reports:
+        name = r['name'][:25]
+        sync = r['sync']
+
+        # Format backups status
+        b_ok = sum(1 for v in r['backups'].values() if v == "SUCCESS")
+        b_total = len(r['backups'])
+        backups_str = f"{b_ok}/{b_total} OK" if b_total > 0 else "N/A"
+
+        # Format prunes status
+        p_ok = sum(1 for v in r['prunes'].values() if v == "SUCCESS")
+        p_total = len(r['prunes'])
+        prunes_str = f"{p_ok}/{p_total} OK" if p_total > 0 else "N/A"
+
+        print(f"{name:<25} | {sync:<10} | {backups_str:<20} | {prunes_str:<15}")
+
+        # Individual repo failures if any
+        for repo, status in r['backups'].items():
+            if status != "SUCCESS":
+                print(f"  └─ Repo '{repo}' Backup: {status}")
+        for repo, status in r['prunes'].items():
+            if status != "SUCCESS":
+                print(f"  └─ Repo '{repo}' Prune: {status}")
+        if 'error' in r:
+            print(f"  └─ Critical Error: {r['error']}")
+
+    print("=" * 80)
+
+    # Exit with error code if any server failed
+    if any(not r['success'] for r in all_reports):
+        sys.exit(1)
 
 
 if __name__ == '__main__':
